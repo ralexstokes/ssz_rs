@@ -8,7 +8,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 
-fn get_branch_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
+pub fn get_branch_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
     let mut focus = sibling(tree_index);
     let mut result = vec![focus];
     while focus > 1 {
@@ -19,7 +19,7 @@ fn get_branch_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
     result
 }
 
-fn get_path_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
+pub fn get_path_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
     let mut focus = tree_index;
     let mut result = vec![focus];
     while focus > 1 {
@@ -30,7 +30,7 @@ fn get_path_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
     result
 }
 
-fn get_helper_indices(indices: &[GeneralizedIndex]) -> Vec<GeneralizedIndex> {
+pub fn get_helper_indices(indices: &[GeneralizedIndex]) -> Vec<GeneralizedIndex> {
     let mut all_helper_indices = HashSet::new();
     let mut all_path_indices = HashSet::new();
 
@@ -52,7 +52,7 @@ pub fn calculate_merkle_root(
 ) -> Result<Node, Error> {
     let path_length = get_path_length(index)?;
     if path_length != proof.len() {
-        return Err(Error::InvalidProof)
+        return Err(Error::InvalidProof);
     }
     let mut result = leaf;
 

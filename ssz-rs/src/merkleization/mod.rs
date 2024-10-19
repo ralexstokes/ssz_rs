@@ -1,3 +1,4 @@
+pub mod compact_multiproofs;
 pub mod generalized_index;
 mod merkleize;
 pub mod multiproofs;
@@ -29,6 +30,10 @@ pub enum MerkleizationError {
     InvalidPathElement(PathElement),
     /// Signals an invalid path when walking a `GeneralizedIndexable` type
     InvalidPath(Vec<PathElement>),
+    /// Signals an invalid balance in a descriptor
+    InvalidIndexBalanceInDescriptor,
+    /// Signals an invalid descriptor was provided or calculated
+    InvalidDescriptor(String),
     /// Attempt to prove an inner element outside the bounds of what the implementing type
     /// supports.
     InvalidInnerIndex,
@@ -55,6 +60,8 @@ impl Display for MerkleizationError {
             Self::InvalidGeneralizedIndex => write!(f, "invalid generalized index"),
             Self::InvalidPathElement(element) => write!(f, "invalid path element {element:?}"),
             Self::InvalidPath(path) => write!(f, "invalid path {path:?}"),
+            Self::InvalidDescriptor(err) => write!(f, "invalid descriptor {err:?}"),
+            Self::InvalidIndexBalanceInDescriptor => write!(f, "mismatch in count of '0's vs '1's at the last index in proof descriptor"),
             Self::InvalidInnerIndex => write!(f, "requested to compute proof for an inner element outside the bounds of what this type supports"),
             Self::NoInnerElement => write!(
                 f,

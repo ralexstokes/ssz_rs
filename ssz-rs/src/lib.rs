@@ -164,6 +164,7 @@ mod exports {
         error::{Error as SimpleSerializeError, InstanceError, TypeError},
         list::List,
         merkleization::{
+            compact_multiproofs,
             generalized_index::default_generalized_index,
             multiproofs,
             proofs::{self, is_valid_merkle_branch, Prove},

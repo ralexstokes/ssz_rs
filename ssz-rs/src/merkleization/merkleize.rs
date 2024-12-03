@@ -1,13 +1,12 @@
 //! Support for computing Merkle trees.
 use crate::{
     lib::*,
-    merkleization::{MerkleizationError as Error, Node, BYTES_PER_CHUNK},
+    merkleization::{hasher::hash_chunks, MerkleizationError as Error, Node, BYTES_PER_CHUNK},
     ser::Serialize,
     GeneralizedIndex,
 };
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
-use sha2::{Digest, Sha256};
 
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports
 // decoration.
@@ -52,10 +51,8 @@ where
     Ok(buffer)
 }
 
-fn hash_nodes(hasher: &mut Sha256, a: impl AsRef<[u8]>, b: impl AsRef<[u8]>, out: &mut [u8]) {
-    hasher.update(a);
-    hasher.update(b);
-    out.copy_from_slice(&hasher.finalize_reset());
+fn hash_nodes(a: impl AsRef<[u8]>, b: impl AsRef<[u8]>, out: &mut [u8]) {
+    out.copy_from_slice(&hash_chunks(a, b));
 }
 
 const MAX_MERKLE_TREE_DEPTH: usize = 64;
@@ -114,7 +111,6 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
     let mut layer = chunks.to_vec();
     // SAFETY: checked subtraction is unnecessary, as we return early when chunk_count == 0; qed
     let mut last_index = chunk_count - 1;
-    let mut hasher = Sha256::new();
     // for each layer of the tree, starting from the bottom and walking up to the root:
     for k in (1..height).rev() {
         // for each pair of nodes in this layer:
@@ -171,13 +167,11 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
                 // NOTE: nodes share memory here and so we can't use the `hash_nodes` utility
                 // as the disjunct nature is reflect in that functions type signature
                 // so instead we will just replicate here.
-                hasher.update(&left);
-                hasher.update(right);
-                left.copy_from_slice(&hasher.finalize_reset());
+                left.copy_from_slice(&hash_chunks(&left, right));
             } else {
                 // SAFETY: index is safe because parent.len() % BYTES_PER_CHUNK == 0 and
                 // parent isn't empty; qed
-                hash_nodes(&mut hasher, left, right, &mut parent[..BYTES_PER_CHUNK]);
+                hash_nodes(left, right, &mut parent[..BYTES_PER_CHUNK]);
             }
         }
         last_index /= 2;
@@ -208,9 +202,8 @@ pub fn merkleize(chunks: &[u8], limit: Option<usize>) -> Result<Node, Error> {
 fn mix_in_decoration(root: Node, decoration: usize) -> Node {
     let decoration_data = decoration.hash_tree_root().expect("can merkleize usize");
 
-    let mut hasher = Sha256::new();
     let mut output = vec![0u8; BYTES_PER_CHUNK];
-    hash_nodes(&mut hasher, root, decoration_data, &mut output);
+    hash_nodes(root, decoration_data, &mut output);
     output.as_slice().try_into().expect("can extract root")
 }
 
@@ -238,17 +231,13 @@ pub(crate) fn elements_to_chunks<'a, T: HashTreeRoot + 'a>(
 pub struct Tree(Vec<u8>);
 
 impl Tree {
-    pub fn mix_in_decoration(
-        &mut self,
-        decoration: usize,
-        hasher: &mut Sha256,
-    ) -> Result<(), Error> {
+    pub fn mix_in_decoration(&mut self, decoration: usize) -> Result<(), Error> {
         let target_node = &mut self[DECORATION_GENERALIZED_INDEX];
         let decoration_node = decoration.hash_tree_root()?;
         target_node.copy_from_slice(decoration_node.as_ref());
-        hasher.update(&self[INNER_ROOT_GENERALIZED_INDEX]);
-        hasher.update(&self[DECORATION_GENERALIZED_INDEX]);
-        self[1].copy_from_slice(&hasher.finalize_reset());
+        let out =
+            hash_chunks(&self[INNER_ROOT_GENERALIZED_INDEX], &self[DECORATION_GENERALIZED_INDEX]);
+        self[1].copy_from_slice(&out);
         Ok(())
     }
 
@@ -288,7 +277,6 @@ impl std::fmt::Debug for Tree {
 // Invariant: `leaf_count.next_power_of_two() == leaf_count`
 // NOTE: naive implementation, can make much more efficient
 pub fn compute_merkle_tree(
-    hasher: &mut Sha256,
     chunks: &[u8],
     leaf_count: usize,
 ) -> Result<Tree, Error> {
@@ -320,7 +308,7 @@ pub fn compute_merkle_tree(
         // NOTE: children.len() == 2 * BYTES_PER_CHUNK
         let (parent, children) = focus.split_at_mut(children_index);
         let (left, right) = children.split_at(BYTES_PER_CHUNK);
-        hash_nodes(hasher, left, right, &mut parent[..BYTES_PER_CHUNK]);
+        hash_nodes(left, right, &mut parent[..BYTES_PER_CHUNK]);
     }
     Ok(Tree(buffer))
 }
@@ -332,8 +320,7 @@ mod tests {
 
     // Return the root of the Merklization of a binary tree formed from `chunks`.
     fn merkleize_chunks(chunks: &[u8], leaf_count: usize) -> Result<Node, Error> {
-        let mut hasher = Sha256::new();
-        let tree = compute_merkle_tree(&mut hasher, chunks, leaf_count)?;
+        let tree = compute_merkle_tree(chunks, leaf_count)?;
         let root_index = default_generalized_index();
         Ok(tree[root_index].try_into().expect("can produce a single root chunk"))
     }

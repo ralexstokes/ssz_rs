@@ -367,6 +367,10 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
 
 // Process a subtree of the Merkle tree.
 fn process_subtree(buffer: &mut [u8], size: usize) {
+    // No pairs to process
+    if size < 2 {
+        return;
+    }
     // Process from leaves up, handling pairs of nodes
     for i in (0..size - 1).rev().step_by(2) {
         let left = &buffer[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
@@ -552,6 +556,41 @@ mod tests {
                 "9317695d95b5a3b46e976b5a9cbfcfccb600accaddeda9ac867cc9669b862979"
             )
         );
+    }
+
+    #[test]
+    fn test_process_subtree_with_size_zero() {
+        let mut buffer = vec![0u8; 0];
+        process_subtree(&mut buffer, 0);
+        // Expect no panic and buffer remains unchanged
+        assert_eq!(buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_process_subtree_with_size_one() {
+        let mut buffer = vec![1u8; BYTES_PER_CHUNK];
+        process_subtree(&mut buffer, 1);
+        // Expect no changes since there's only one node
+        assert_eq!(buffer, vec![1u8; BYTES_PER_CHUNK]);
+    }
+
+    #[test]
+    fn test_process_subtree_with_size_two() {
+        let mut buffer = vec![2u8; 2 * BYTES_PER_CHUNK];
+
+        // Manually compute the expected hash of the two nodes
+        let left_node = &buffer[0..BYTES_PER_CHUNK];
+        let right_node = &buffer[BYTES_PER_CHUNK..2 * BYTES_PER_CHUNK];
+        let expected_hash = hash_chunks(left_node, right_node);
+
+        // Process the subtree
+        process_subtree(&mut buffer, 2);
+
+        // Extract the parent node (first 32 bytes)
+        let parent_node = &buffer[0..BYTES_PER_CHUNK];
+
+        // Assert that the parent node now contains the expected hash
+        assert_eq!(parent_node, expected_hash.to_vec().as_slice());
     }
 
     #[test]

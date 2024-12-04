@@ -5,7 +5,11 @@ use std::{convert::TryFrom, env, fs::File, hint::black_box, io::BufReader, path:
 // https://github.com/ethereum/consensus-specs/blob/85b4d003668731cbad63d6b6ba53fcc7d042cba1/specs/bellatrix/beacon-chain.md?plain=1#L69-L76
 const MAX_BYTES_PER_TRANSACTION: usize = 1_073_741_824; // 1 GiB
 const MAX_TRANSACTIONS_PER_PAYLOAD: usize = 1_048_576; // 2^20
-const TRANSACTIONS_JSON_PATH: &str = "benches/21315748.json";
+
+// Test blocks just above and below 256, a power of 2.
+// 21315748.json contains 247 transactions.
+// 21327802.json contains 261 transactions.
+const TRANSACTIONS_JSON_PATHS: &[&str] = &["benches/21315748.json", "benches/21327802.json"];
 
 /// Represents the structure of the JSON file.
 /// Each transaction is a hex-encoded string prefixed with "0x".
@@ -44,20 +48,17 @@ fn load_transactions<P: AsRef<Path>>(
             .unwrap_or_else(|_| panic!("Failed to decode hex string at index {}", i));
 
         // Convert Vec<u8> to List<u8, MAX_BYTES_PER_TRANSACTION>
-        let tx_list =
-            List::<u8, MAX_BYTES_PER_TRANSACTION>::try_from(tx_bytes).expect(&format!(
-                "Failed to convert Vec<u8> to List<u8, {}> at index {}",
-                MAX_BYTES_PER_TRANSACTION, i
-            ));
+        let tx_list = List::<u8, MAX_BYTES_PER_TRANSACTION>::try_from(tx_bytes).expect(&format!(
+            "Failed to convert Vec<u8> to List<u8, {}> at index {}",
+            MAX_BYTES_PER_TRANSACTION, i
+        ));
 
         inner.push(tx_list);
     }
 
     let outer =
-        List::<List<u8, MAX_BYTES_PER_TRANSACTION>, MAX_TRANSACTIONS_PER_PAYLOAD>::try_from(
-            inner,
-        )
-        .expect("Failed to convert Vec<List<u8, MAX_BYTES_PER_TRANSACTION>> to outer List");
+        List::<List<u8, MAX_BYTES_PER_TRANSACTION>, MAX_TRANSACTIONS_PER_PAYLOAD>::try_from(inner)
+            .expect("Failed to convert Vec<List<u8, MAX_BYTES_PER_TRANSACTION>> to outer List");
 
     outer
 }
@@ -69,32 +70,34 @@ fn get_transaction_indices(size: usize) -> Vec<usize> {
 }
 
 fn bench_prove(c: &mut Criterion) {
-    // Path to the JSON file (ensure it's in the same directory as the benchmark)
-    let file_path = Path::new(TRANSACTIONS_JSON_PATH);
+    for &file_path_str in TRANSACTIONS_JSON_PATHS {
+        let file_path = Path::new(file_path_str);
 
-    // Generate the nested List from the JSON file
-    let outer = load_transactions(file_path);
-    let size = outer.len();
+        // Generate the nested List from the JSON file
+        let outer = load_transactions(file_path);
+        let size = outer.len();
 
-    // Determine indices to benchmark (first, middle, last)
-    let indices = get_transaction_indices(size);
+        // Determine indices to benchmark (first, middle, last)
+        let indices = get_transaction_indices(size);
 
-    let mut group = c.benchmark_group(format!("Prove Benchmark - size {}", size));
-    // Reduce sample size for larger benchmarks to ensure completion
-    group.sample_size(10);
+        let mut group =
+            c.benchmark_group(format!("Prove Benchmark - File: {} - size {}", file_path_str, size));
+        // Reduce sample size for larger benchmarks to ensure completion
+        group.sample_size(10);
 
-    for &index in &indices {
-        let path = vec![PathElement::from(index)];
+        for &index in &indices {
+            let path = vec![PathElement::from(index)];
 
-        group.bench_with_input(BenchmarkId::from_parameter(index), &path, |b, path| {
-            b.iter(|| {
-                let proof = outer.prove(black_box(path)).expect("Failed to generate proof");
-                black_box(proof)
-            })
-        });
+            group.bench_with_input(BenchmarkId::from_parameter(index), &path, |b, path| {
+                b.iter(|| {
+                    let proof = outer.prove(black_box(path)).expect("Failed to generate proof");
+                    black_box(proof)
+                })
+            });
+        }
+
+        group.finish();
     }
-
-    group.finish();
 }
 
 criterion_group!(benches, bench_prove);

@@ -289,6 +289,11 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     let interior_count = node_count - leaf_count;
     let leaf_start = interior_count * BYTES_PER_CHUNK;
 
+    // Return early if there are less than two chunks
+    if leaf_count < 2 {
+        return Ok(Tree(chunks.to_vec()));
+    }
+
     // Create buffer to entire tree
     let mut buffer = vec![0u8; node_count * BYTES_PER_CHUNK];
 

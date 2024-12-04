@@ -321,22 +321,9 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     let mut left_buf = vec![0u8; left_nodes.len() * BYTES_PER_CHUNK];
     let mut right_buf = vec![0u8; right_nodes.len() * BYTES_PER_CHUNK];
 
-    // Copy relevant chunks into each buffer
-    for (i, &node) in left_nodes.iter().enumerate() {
-        let src_start = node * BYTES_PER_CHUNK;
-        let src_end = src_start + BYTES_PER_CHUNK;
-        let dst_start = i * BYTES_PER_CHUNK;
-        left_buf[dst_start..dst_start + BYTES_PER_CHUNK]
-            .copy_from_slice(&buffer[src_start..src_end]);
-    }
-
-    for (i, &node) in right_nodes.iter().enumerate() {
-        let src_start = node * BYTES_PER_CHUNK;
-        let src_end = src_start + BYTES_PER_CHUNK;
-        let dst_start = i * BYTES_PER_CHUNK;
-        right_buf[dst_start..dst_start + BYTES_PER_CHUNK]
-            .copy_from_slice(&buffer[src_start..src_end]);
-    }
+    // Copy relevant chunks to subtree buffers
+    copy_nodes_to_buffer(&buffer, &left_nodes, &mut left_buf);
+    copy_nodes_to_buffer(&buffer, &right_nodes, &mut right_buf);
 
     // Process left and right subtrees in parallel
     rayon::join(
@@ -344,20 +331,9 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
         || process_subtree(&mut right_buf, right_nodes.len()),
     );
 
-    // Copy results back
-    for (i, &node) in left_nodes.iter().enumerate() {
-        let src_start = i * BYTES_PER_CHUNK;
-        let dst_start = node * BYTES_PER_CHUNK;
-        buffer[dst_start..dst_start + BYTES_PER_CHUNK]
-            .copy_from_slice(&left_buf[src_start..src_start + BYTES_PER_CHUNK]);
-    }
-
-    for (i, &node) in right_nodes.iter().enumerate() {
-        let src_start = i * BYTES_PER_CHUNK;
-        let dst_start = node * BYTES_PER_CHUNK;
-        buffer[dst_start..dst_start + BYTES_PER_CHUNK]
-            .copy_from_slice(&right_buf[src_start..src_start + BYTES_PER_CHUNK]);
-    }
+    // Copy results back to main buffer
+    copy_buffer_to_nodes(&left_buf, &left_nodes, &mut buffer);
+    copy_buffer_to_nodes(&right_buf, &right_nodes, &mut buffer);
 
     // Compute root hash
     let root_hash = hash_chunks(
@@ -390,6 +366,26 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         let parent_slice =
             &mut buffer[parent_index * BYTES_PER_CHUNK..(parent_index + 1) * BYTES_PER_CHUNK];
         parent_slice.copy_from_slice(&hash);
+    }
+}
+
+#[inline]
+fn copy_nodes_to_buffer(src: &[u8], nodes: &[usize], dst: &mut [u8]) {
+    for (i, &node) in nodes.iter().enumerate() {
+        let src_start = node * BYTES_PER_CHUNK;
+        let dst_start = i * BYTES_PER_CHUNK;
+        dst[dst_start..dst_start + BYTES_PER_CHUNK]
+            .copy_from_slice(&src[src_start..src_start + BYTES_PER_CHUNK]);
+    }
+}
+
+#[inline]
+fn copy_buffer_to_nodes(src: &[u8], nodes: &[usize], dst: &mut [u8]) {
+    for (i, &node) in nodes.iter().enumerate() {
+        let src_start = i * BYTES_PER_CHUNK;
+        let dst_start = node * BYTES_PER_CHUNK;
+        dst[dst_start..dst_start + BYTES_PER_CHUNK]
+            .copy_from_slice(&src[src_start..src_start + BYTES_PER_CHUNK]);
     }
 }
 

@@ -2,3 +2,7 @@ target
 Cargo.lock
 consensus-spec-tests
 cobertura.xml
+flamegraph.svg
+
+# macOS
+.DS_Store

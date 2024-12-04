@@ -63,12 +63,6 @@ fn load_transactions<P: AsRef<Path>>(
     outer
 }
 
-/// Function to determine transaction indices based on the current size.
-/// Returns first, half, and second last indexes.
-fn get_transaction_indices(size: usize) -> Vec<usize> {
-    vec![0, size / 2, size - 1]
-}
-
 fn bench_prove(c: &mut Criterion) {
     for &file_path_str in TRANSACTIONS_JSON_PATHS {
         let file_path = Path::new(file_path_str);
@@ -78,23 +72,21 @@ fn bench_prove(c: &mut Criterion) {
         let size = outer.len();
 
         // Determine indices to benchmark (first, middle, last)
-        let indices = get_transaction_indices(size);
+        let index = size / 2;
 
         let mut group =
             c.benchmark_group(format!("Prove Benchmark - File: {} - size {}", file_path_str, size));
         // Reduce sample size for larger benchmarks to ensure completion
         group.sample_size(10);
 
-        for &index in &indices {
-            let path = vec![PathElement::from(index)];
+        let path = vec![PathElement::from(index)];
 
-            group.bench_with_input(BenchmarkId::from_parameter(index), &path, |b, path| {
-                b.iter(|| {
-                    let proof = outer.prove(black_box(path)).expect("Failed to generate proof");
-                    black_box(proof)
-                })
-            });
-        }
+        group.bench_with_input(BenchmarkId::from_parameter(index), &path, |b, path| {
+            b.iter(|| {
+                let proof = outer.prove(black_box(path)).expect("Failed to generate proof");
+                black_box(proof)
+            })
+        });
 
         group.finish();
     }

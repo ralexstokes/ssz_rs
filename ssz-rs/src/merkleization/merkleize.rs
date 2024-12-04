@@ -105,7 +105,7 @@ fn merkleize_chunks_with_virtual_padding(chunks: &[u8], leaf_count: usize) -> Re
         let depth = height - 1;
         // SAFETY: index is safe while depth == leaf_count.trailing_zeros() < MAX_MERKLE_TREE_DEPTH;
         // qed
-        return Ok(CONTEXT[depth as usize].try_into().expect("can produce a single root chunk"))
+        return Ok(CONTEXT[depth as usize].try_into().expect("can produce a single root chunk"));
     }
 
     let mut layer = chunks.to_vec();
@@ -192,7 +192,7 @@ pub fn merkleize(chunks: &[u8], limit: Option<usize>) -> Result<Node, Error> {
     let mut leaf_count = chunk_count.next_power_of_two();
     if let Some(limit) = limit {
         if limit < chunk_count {
-            return Err(Error::InputExceedsLimit(limit))
+            return Err(Error::InputExceedsLimit(limit));
         }
         leaf_count = limit.next_power_of_two();
     }
@@ -276,13 +276,12 @@ impl std::fmt::Debug for Tree {
 // Invariant: `chunks.len() % BYTES_PER_CHUNK == 0`
 // Invariant: `leaf_count.next_power_of_two() == leaf_count`
 // NOTE: naive implementation, can make much more efficient
-pub fn compute_merkle_tree(
-    chunks: &[u8],
-    leaf_count: usize,
-) -> Result<Tree, Error> {
+pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Error> {
+    // Input validation
     debug_assert!(chunks.len() % BYTES_PER_CHUNK == 0);
     debug_assert!(leaf_count.next_power_of_two() == leaf_count);
 
+    // Calculate nodes needed in tree
     // SAFETY: checked subtraction is unnecessary,
     // as leaf_count != 0 (0.next_power_of_two() == 1); qed
     let node_count = 2 * leaf_count - 1;
@@ -290,27 +289,99 @@ pub fn compute_merkle_tree(
     let interior_count = node_count - leaf_count;
     let leaf_start = interior_count * BYTES_PER_CHUNK;
 
+    // Create buffer to entire tree
     let mut buffer = vec![0u8; node_count * BYTES_PER_CHUNK];
+
+    // Copy input chunks to leaf positions
     buffer[leaf_start..leaf_start + chunks.len()].copy_from_slice(chunks);
 
-    for i in (1..node_count).rev().step_by(2) {
-        // SAFETY: checked subtraction is unnecessary, as i >= 1; qed
-        let parent_index = (i - 1) / 2;
-        let focus = &mut buffer[parent_index * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
-        // SAFETY: checked subtraction is unnecessary:
-        // focus.len() = (i + 1 - parent_index) * BYTES_PER_CHUNK
-        //             = ((2*i + 2 - i + 1) / 2) * BYTES_PER_CHUNK
-        //             = ((i + 3) / 2) * BYTES_PER_CHUNK
-        // and
-        // i >= 1
-        // so focus.len() >= 2 * BYTES_PER_CHUNK; qed
-        let children_index = focus.len() - 2 * BYTES_PER_CHUNK;
-        // NOTE: children.len() == 2 * BYTES_PER_CHUNK
-        let (parent, children) = focus.split_at_mut(children_index);
-        let (left, right) = children.split_at(BYTES_PER_CHUNK);
-        hash_nodes(left, right, &mut parent[..BYTES_PER_CHUNK]);
+    // We can take advantage of the fact that the tree is a perfect binary tree
+    // and process subtrees in parallel bottom-up.
+    // For leaf_count = 4:
+
+    //       0       <- Root (index 0)
+    //    /     \
+    //   1       2   <- Interior nodes
+    //  / \     / \
+    // 3   4   5   6 <- Leaf nodes
+
+    // Split for left subtree (nodes 1,3,4) and right subtree (nodes 2,5,6)
+    let (left_nodes, right_nodes): (Vec<_>, Vec<_>) = (1..node_count).partition(|&i| {
+        let level = (i + 1).ilog2() as usize;
+        let pos_in_level = i - ((1 << level) - 1);
+        pos_in_level < (1 << (level - 1))
+    });
+
+    // Create buffers for left and right subtrees
+    let mut left_buf = vec![0u8; left_nodes.len() * BYTES_PER_CHUNK];
+    let mut right_buf = vec![0u8; right_nodes.len() * BYTES_PER_CHUNK];
+
+    // Copy relevant chunks into each buffer
+    for (i, &node) in left_nodes.iter().enumerate() {
+        let src_start = node * BYTES_PER_CHUNK;
+        let src_end = src_start + BYTES_PER_CHUNK;
+        let dst_start = i * BYTES_PER_CHUNK;
+        left_buf[dst_start..dst_start + BYTES_PER_CHUNK]
+            .copy_from_slice(&buffer[src_start..src_end]);
     }
+
+    for (i, &node) in right_nodes.iter().enumerate() {
+        let src_start = node * BYTES_PER_CHUNK;
+        let src_end = src_start + BYTES_PER_CHUNK;
+        let dst_start = i * BYTES_PER_CHUNK;
+        right_buf[dst_start..dst_start + BYTES_PER_CHUNK]
+            .copy_from_slice(&buffer[src_start..src_end]);
+    }
+
+    // Process left and right subtrees in parallel
+    rayon::join(
+        || process_subtree(&mut left_buf, left_nodes.len()),
+        || process_subtree(&mut right_buf, right_nodes.len()),
+    );
+
+    // Copy results back
+    for (i, &node) in left_nodes.iter().enumerate() {
+        let src_start = i * BYTES_PER_CHUNK;
+        let dst_start = node * BYTES_PER_CHUNK;
+        buffer[dst_start..dst_start + BYTES_PER_CHUNK]
+            .copy_from_slice(&left_buf[src_start..src_start + BYTES_PER_CHUNK]);
+    }
+
+    for (i, &node) in right_nodes.iter().enumerate() {
+        let src_start = i * BYTES_PER_CHUNK;
+        let dst_start = node * BYTES_PER_CHUNK;
+        buffer[dst_start..dst_start + BYTES_PER_CHUNK]
+            .copy_from_slice(&right_buf[src_start..src_start + BYTES_PER_CHUNK]);
+    }
+
+    // Compute root hash
+    let root_hash = hash_chunks(
+        &buffer[BYTES_PER_CHUNK..2 * BYTES_PER_CHUNK],
+        &buffer[2 * BYTES_PER_CHUNK..3 * BYTES_PER_CHUNK],
+    );
+    // Store root hash at the root position
+    buffer[..BYTES_PER_CHUNK].copy_from_slice(&root_hash);
+
     Ok(Tree(buffer))
+}
+
+// Process a subtree of the Merkle tree.
+fn process_subtree(buffer: &mut [u8], size: usize) {
+    // Process from leaves up, handling pairs of nodes
+    for i in (0..size - 1).rev().step_by(2) {
+        let left = &buffer[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
+        let right = &buffer[(i + 1) * BYTES_PER_CHUNK..(i + 2) * BYTES_PER_CHUNK];
+
+        // Compute parent hash
+        let hash = hash_chunks(left, right);
+
+        // Store at parent position (i/2)
+        // SAFETY: checked subtraction is unnecessary, as i >= 1; qed
+        let parent_index = i / 2;
+        let parent_slice =
+            &mut buffer[parent_index * BYTES_PER_CHUNK..(parent_index + 1) * BYTES_PER_CHUNK];
+        parent_slice.copy_from_slice(&hash);
+    }
 }
 
 #[cfg(test)]

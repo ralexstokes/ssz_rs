@@ -19,6 +19,5 @@ fn hash_chunks_sha256(left: impl AsRef<[u8]>, right: impl AsRef<[u8]>) -> [u8; B
 pub fn hash_chunks(left: impl AsRef<[u8]>, right: impl AsRef<[u8]>) -> [u8; BYTES_PER_CHUNK] {
     debug_assert!(left.as_ref().len() == BYTES_PER_CHUNK);
     debug_assert!(right.as_ref().len() == BYTES_PER_CHUNK);
-
-    return hash_chunks_sha256(left, right);
+    hash_chunks_sha256(left, right)
 }

@@ -300,17 +300,29 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     // Copy input chunks to leaf positions
     buffer[leaf_start..leaf_start + chunks.len()].copy_from_slice(chunks);
 
-    // We can take advantage of the fact that the tree is a perfect binary tree
-    // and process subtrees in parallel bottom-up.
-    // For leaf_count = 4:
+    if leaf_count >= 8 {
+        compute_merkle_tree_parallel(&mut buffer, node_count);
+    } else {
+        compute_merkle_tree_serial(&mut buffer, node_count);
+    }
 
-    //       0       <- Root (index 0)
-    //    /     \
-    //   1       2   <- Interior nodes
-    //  / \     / \
-    // 3   4   5   6 <- Leaf nodes
+    Ok(Tree(buffer))
+}
 
-    // Split for left subtree (nodes 1,3,4) and right subtree (nodes 2,5,6)
+// Compute the Merkle tree in parallel.
+//
+// We can take advantage of the fact that the tree is a perfect binary tree
+// and process subtrees in parallel bottom-up.
+// For leaf_count = 4:
+
+//       0       <- Root (index 0)
+//    /     \
+//   1       2   <- Interior nodes
+//  / \     / \
+// 3   4   5   6 <- Leaf nodes
+
+// Split for left subtree (nodes 1,3,4) and right subtree (nodes 2,5,6)
+fn compute_merkle_tree_parallel(buffer: &mut [u8], node_count: usize) {
     let (left_nodes, right_nodes): (Vec<_>, Vec<_>) = (1..node_count).partition(|&i| {
         let level = (i + 1).ilog2() as usize;
         let pos_in_level = i - ((1 << level) - 1);
@@ -322,8 +334,8 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     let mut right_buf = vec![0u8; right_nodes.len() * BYTES_PER_CHUNK];
 
     // Copy relevant chunks to subtree buffers
-    copy_nodes_to_buffer(&buffer, &left_nodes, &mut left_buf);
-    copy_nodes_to_buffer(&buffer, &right_nodes, &mut right_buf);
+    copy_nodes_to_buffer(buffer, &left_nodes, &mut left_buf);
+    copy_nodes_to_buffer(buffer, &right_nodes, &mut right_buf);
 
     // Process left and right subtrees in parallel
     rayon::join(
@@ -332,8 +344,8 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     );
 
     // Copy results back to main buffer
-    copy_buffer_to_nodes(&left_buf, &left_nodes, &mut buffer);
-    copy_buffer_to_nodes(&right_buf, &right_nodes, &mut buffer);
+    copy_buffer_to_nodes(&left_buf, &left_nodes, buffer);
+    copy_buffer_to_nodes(&right_buf, &right_nodes, buffer);
 
     // Compute root hash
     let root_hash = hash_chunks(
@@ -342,8 +354,27 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     );
     // Store root hash at the root position
     buffer[..BYTES_PER_CHUNK].copy_from_slice(&root_hash);
+}
 
-    Ok(Tree(buffer))
+// Compute the Merkle tree serially.
+fn compute_merkle_tree_serial(buffer: &mut [u8], node_count: usize) {
+    for i in (1..node_count).rev().step_by(2) {
+        // SAFETY: checked subtraction is unnecessary, as i >= 1; qed
+        let parent_index = (i - 1) / 2;
+        let focus = &mut buffer[parent_index * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
+        // SAFETY: checked subtraction is unnecessary:
+        // focus.len() = (i + 1 - parent_index) * BYTES_PER_CHUNK
+        //             = ((2*i + 2 - i + 1) / 2) * BYTES_PER_CHUNK
+        //             = ((i + 3) / 2) * BYTES_PER_CHUNK
+        // and
+        // i >= 1
+        // so focus.len() >= 2 * BYTES_PER_CHUNK; qed
+        let children_index = focus.len() - 2 * BYTES_PER_CHUNK;
+        // NOTE: children.len() == 2 * BYTES_PER_CHUNK
+        let (parent, children) = focus.split_at_mut(children_index);
+        let (left, right) = children.split_at(BYTES_PER_CHUNK);
+        hash_nodes(left, right, &mut parent[..BYTES_PER_CHUNK]);
+    }
 }
 
 // Process a subtree of the Merkle tree.

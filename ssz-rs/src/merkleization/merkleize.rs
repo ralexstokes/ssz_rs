@@ -34,6 +34,9 @@ static ZERO_LEAF_HASH: Lazy<[u8; BYTES_PER_CHUNK]> = Lazy::new(|| {
     hash_chunks(&left_zero, &right_zero)
 });
 
+static ZERO_PARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
+    Lazy::new(|| hash_chunks(ZERO_LEAF_HASH.as_ref(), ZERO_LEAF_HASH.as_ref()));
+
 // Ensures `buffer` can be exactly broken up into `BYTES_PER_CHUNK` chunks of bytes
 // via padding any partial chunks at the end of `buffer`
 pub fn pack_bytes(buffer: &mut Vec<u8>) {
@@ -636,9 +639,12 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         let right_is_zero = right.iter().all(|&byte| byte == 0);
 
         // Compute parent hash
-        let hash = if left_is_zero && right_is_zero {
+        let parent_hash = if left_is_zero && right_is_zero {
             // Use the precomputed zero hash
             *ZERO_LEAF_HASH
+        } else if left == &*ZERO_LEAF_HASH && right == &*ZERO_LEAF_HASH {
+            // Use the precomputed zero parent hash
+            *ZERO_PARENT_HASH
         } else {
             // Compute the hash normally
             hash_chunks(left, right)
@@ -649,7 +655,7 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         let parent_index = i / 2;
         let parent_slice =
             &mut buffer[parent_index * BYTES_PER_CHUNK..(parent_index + 1) * BYTES_PER_CHUNK];
-        parent_slice.copy_from_slice(&hash);
+        parent_slice.copy_from_slice(&parent_hash);
     }
 }
 

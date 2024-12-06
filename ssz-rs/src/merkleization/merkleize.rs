@@ -40,6 +40,9 @@ static ZERO_PARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
 static ZERO_GRANDPARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
     Lazy::new(|| hash_chunks(ZERO_PARENT_HASH.as_ref(), ZERO_PARENT_HASH.as_ref()));
 
+static ZERO_GRANDGRANDPARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
+    Lazy::new(|| hash_chunks(ZERO_GRANDPARENT_HASH.as_ref(), ZERO_GRANDPARENT_HASH.as_ref()));
+
 // Ensures `buffer` can be exactly broken up into `BYTES_PER_CHUNK` chunks of bytes
 // via padding any partial chunks at the end of `buffer`
 pub fn pack_bytes(buffer: &mut Vec<u8>) {
@@ -651,6 +654,8 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         } else if left == *ZERO_PARENT_HASH && right == *ZERO_PARENT_HASH {
             // Use the precomputed zero grandparent hash
             *ZERO_GRANDPARENT_HASH
+        } else if left == *ZERO_GRANDPARENT_HASH && right == *ZERO_GRANDPARENT_HASH {
+            *ZERO_GRANDGRANDPARENT_HASH
         } else {
             // Compute the hash normally
             hash_chunks(left, right)

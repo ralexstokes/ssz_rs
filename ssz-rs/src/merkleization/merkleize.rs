@@ -7,6 +7,7 @@ use crate::{
 };
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
+use once_cell::sync::Lazy;
 use std::thread;
 
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports
@@ -25,6 +26,13 @@ pub trait HashTreeRoot {
         true
     }
 }
+
+/// Precomputed hash of two 32-byte zero arrays concatenated.
+static ZERO_LEAF_HASH: Lazy<[u8; BYTES_PER_CHUNK]> = Lazy::new(|| {
+    let left_zero = [0u8; BYTES_PER_CHUNK];
+    let right_zero = [0u8; BYTES_PER_CHUNK];
+    hash_chunks(&left_zero, &right_zero)
+});
 
 // Ensures `buffer` can be exactly broken up into `BYTES_PER_CHUNK` chunks of bytes
 // via padding any partial chunks at the end of `buffer`
@@ -623,8 +631,18 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         let left = &buffer[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
         let right = &buffer[(i + 1) * BYTES_PER_CHUNK..(i + 2) * BYTES_PER_CHUNK];
 
+        // Check if both left and right are all zero
+        let left_is_zero = left.iter().all(|&byte| byte == 0);
+        let right_is_zero = right.iter().all(|&byte| byte == 0);
+
         // Compute parent hash
-        let hash = hash_chunks(left, right);
+        let hash = if left_is_zero && right_is_zero {
+            // Use the precomputed zero hash
+            *ZERO_LEAF_HASH
+        } else {
+            // Compute the hash normally
+            hash_chunks(left, right)
+        };
 
         // Store at parent position (i/2)
         // SAFETY: checked subtraction is unnecessary, as i >= 1; qed

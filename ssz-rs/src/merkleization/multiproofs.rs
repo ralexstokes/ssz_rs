@@ -167,10 +167,10 @@ mod tests {
 
     #[test]
     fn test_verify_merkle_multiproof() {
-        //         Root
+        //        Root
         //        /  \
-        //     Leaf1  ProofNode
-        //    (idx2)  (idx3)
+        //    Leaf1  ProofNode
+        //   (idx2)  (idx3)
         let leaf1 = {
             let mut node = Node::default();
             node[0] = 1;
@@ -198,5 +198,71 @@ mod tests {
 
         let result = verify_merkle_multiproof(&leaves, &proof, &indices, root);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_merkle_multiproof_multiple() {
+        // Constructing a deeper Merkle tree:
+        //                  Root (1)
+        //                /          \
+        //          Node2 (2)        Node3 (3)
+        //          /     \            /     \
+        //     Node4 (4)  Node5(5)  Node6 (6)  Node7 (7)
+        //      / \        / \        / \        / \
+        //    L8   L9    L10  L11   L12  L13   L14  L15
+
+        // Create leaf nodes
+        let leaves = (8..=15).map(create_node).collect::<Vec<_>>();
+        let leaf_map: HashMap<GeneralizedIndex, Node> =
+            (8..=15).map(|i| (i, leaves[(i - 8) as usize])).collect();
+
+        // Hash intermediate nodes
+        let node4 = hash_nodes(&leaf_map[&8], &leaf_map[&9]);
+        let node5 = hash_nodes(&leaf_map[&10], &leaf_map[&11]);
+        let node6 = hash_nodes(&leaf_map[&12], &leaf_map[&13]);
+        let node7 = hash_nodes(&leaf_map[&14], &leaf_map[&15]);
+        let node2 = hash_nodes(&node4, &node5);
+        let node3 = hash_nodes(&node6, &node7);
+
+        // Compute the root
+        let root = hash_nodes(&node2, &node3);
+
+        // Define the leaves to prove and their indices
+        let proof_leaves = vec![leaf_map[&8], leaf_map[&13]];
+        let proof_indices = vec![8, 13];
+
+        // Define the proof nodes
+        // [12, 9, 7, 5]
+        let proof_nodes = vec![
+            leaf_map[&12], // Sibling of Leaf13
+            leaf_map[&9],  // Sibling of Leaf8
+            node7.clone(), // Sibling of Node6
+            node5.clone(), // Sibling of Node4
+        ];
+
+        // Perform the multiproof verification
+        let result = verify_merkle_multiproof(&proof_leaves, &proof_nodes, &proof_indices, root);
+
+        assert!(
+            result.is_ok(),
+            "Multiproof verification failed for multiple leaves in a deeper tree"
+        );
+    }
+
+    // Helper function to create a node with a specific value
+    fn create_node(value: u8) -> Node {
+        let mut node = Node::default();
+        node[0] = value;
+        node
+    }
+
+    // Helper function to hash two child nodes to create a parent node
+    fn hash_nodes(left: &Node, right: &Node) -> Node {
+        let mut hasher = Sha256::new();
+        hasher.update(left);
+        hasher.update(right);
+        let mut parent = Node::default();
+        parent.copy_from_slice(&hasher.finalize());
+        parent
     }
 }

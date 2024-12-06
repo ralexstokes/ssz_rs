@@ -31,7 +31,7 @@ pub trait HashTreeRoot {
 static ZERO_LEAF_HASH: Lazy<[u8; BYTES_PER_CHUNK]> = Lazy::new(|| {
     let left_zero = [0u8; BYTES_PER_CHUNK];
     let right_zero = [0u8; BYTES_PER_CHUNK];
-    hash_chunks(&left_zero, &right_zero)
+    hash_chunks(left_zero, right_zero)
 });
 
 static ZERO_PARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
@@ -645,10 +645,10 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         let parent_hash = if left_is_zero && right_is_zero {
             // Use the precomputed zero hash
             *ZERO_LEAF_HASH
-        } else if left == &*ZERO_LEAF_HASH && right == &*ZERO_LEAF_HASH {
+        } else if left == *ZERO_LEAF_HASH && right == *ZERO_LEAF_HASH {
             // Use the precomputed zero parent hash
             *ZERO_PARENT_HASH
-        } else if left == &*ZERO_PARENT_HASH && right == &*ZERO_PARENT_HASH {
+        } else if left == *ZERO_PARENT_HASH && right == *ZERO_PARENT_HASH {
             // Use the precomputed zero grandparent hash
             *ZERO_GRANDPARENT_HASH
         } else {

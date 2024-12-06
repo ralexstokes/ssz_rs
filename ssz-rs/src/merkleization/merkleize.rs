@@ -27,26 +27,6 @@ pub trait HashTreeRoot {
     }
 }
 
-/// Precomputed hash of two 32-byte zero arrays concatenated.
-static ZERO_LEAF_HASH: Lazy<[u8; BYTES_PER_CHUNK]> = Lazy::new(|| {
-    let left_zero = [0u8; BYTES_PER_CHUNK];
-    let right_zero = [0u8; BYTES_PER_CHUNK];
-    hash_chunks(left_zero, right_zero)
-});
-
-static ZERO_PARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
-    Lazy::new(|| hash_chunks(ZERO_LEAF_HASH.as_ref(), ZERO_LEAF_HASH.as_ref()));
-
-static ZERO_GRANDPARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
-    Lazy::new(|| hash_chunks(ZERO_PARENT_HASH.as_ref(), ZERO_PARENT_HASH.as_ref()));
-
-static ZERO_GRANDGRANDPARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> =
-    Lazy::new(|| hash_chunks(ZERO_GRANDPARENT_HASH.as_ref(), ZERO_GRANDPARENT_HASH.as_ref()));
-
-static ZERO_GRANDGRANDGRANDPARENT_HASH: Lazy<[u8; BYTES_PER_CHUNK]> = Lazy::new(|| {
-    hash_chunks(ZERO_GRANDGRANDPARENT_HASH.as_ref(), ZERO_GRANDGRANDPARENT_HASH.as_ref())
-});
-
 // Ensures `buffer` can be exactly broken up into `BYTES_PER_CHUNK` chunks of bytes
 // via padding any partial chunks at the end of `buffer`
 pub fn pack_bytes(buffer: &mut Vec<u8>) {
@@ -644,24 +624,11 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         let left = &buffer[i * BYTES_PER_CHUNK..(i + 1) * BYTES_PER_CHUNK];
         let right = &buffer[(i + 1) * BYTES_PER_CHUNK..(i + 2) * BYTES_PER_CHUNK];
 
-        // Check if both left and right are all zero
-        let left_is_zero = left.iter().all(|&byte| byte == 0);
-        let right_is_zero = right.iter().all(|&byte| byte == 0);
-
+        // Check if both left and right are all zero or precomputed zero subtree hashes
+        let maybe_parent = zero_parent_level(left, right, &CONTEXT);
         // Compute parent hash
-        let parent_hash = if left_is_zero && right_is_zero {
-            // Use the precomputed zero hash
-            *ZERO_LEAF_HASH
-        } else if left == *ZERO_LEAF_HASH && right == *ZERO_LEAF_HASH {
-            // Use the precomputed zero parent hash
-            *ZERO_PARENT_HASH
-        } else if left == *ZERO_PARENT_HASH && right == *ZERO_PARENT_HASH {
-            // Use the precomputed zero grandparent hash
-            *ZERO_GRANDPARENT_HASH
-        } else if left == *ZERO_GRANDPARENT_HASH && right == *ZERO_GRANDPARENT_HASH {
-            *ZERO_GRANDGRANDPARENT_HASH
-        } else if left == *ZERO_GRANDGRANDPARENT_HASH && right == *ZERO_GRANDGRANDPARENT_HASH {
-            *ZERO_GRANDGRANDGRANDPARENT_HASH
+        let parent_hash = if let Some(zero_hash) = maybe_parent {
+            zero_hash
         } else {
             // Compute the hash normally
             hash_chunks(left, right)
@@ -673,6 +640,37 @@ fn process_subtree(buffer: &mut [u8], size: usize) {
         let parent_slice =
             &mut buffer[parent_index * BYTES_PER_CHUNK..(parent_index + 1) * BYTES_PER_CHUNK];
         parent_slice.copy_from_slice(&parent_hash);
+    }
+}
+
+// Determines subtree level if the node is a zero subtree.
+fn zero_subtree_level(node: &[u8], context: &Context) -> Option<usize> {
+    // Check against precomputed zero hashes in the context
+    let total_levels = MAX_MERKLE_TREE_DEPTH;
+    for lvl in 0..total_levels {
+        if node == &context[lvl][..] {
+            return Some(lvl + 1);
+        }
+    }
+    None
+}
+
+// Determines the parent hash for a pair of nodes if they are both
+// zero subtrees, allowing hashing to be skipped.
+fn zero_parent_level(
+    left: &[u8],
+    right: &[u8],
+    context: &Context,
+) -> Option<[u8; BYTES_PER_CHUNK]> {
+    let left_level = zero_subtree_level(left, context)?;
+    let right_level = zero_subtree_level(right, context)?;
+    if left_level == right_level {
+        // Parent level is one higher
+        let parent_lvl = left_level + 1;
+        // Zero hashes in context start at index 0 for subtree level 1
+        Some(context[parent_lvl - 1].try_into().expect("valid subtree hash"))
+    } else {
+        None
     }
 }
 

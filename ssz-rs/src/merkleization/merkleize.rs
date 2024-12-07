@@ -304,8 +304,10 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     // Detect number of CPU cores
     let num_cores = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
 
-    if leaf_count >= 16 && num_cores >= 4 {
-        compute_merkle_tree_parallel(&mut buffer, node_count);
+    if leaf_count >= 16 && num_cores >= 8 {
+        compute_merkle_tree_parallel_8(&mut buffer, node_count);
+    } else if leaf_count >= 16 && num_cores >= 4 {
+        compute_merkle_tree_parallel_4(&mut buffer, node_count);
     } else {
         compute_merkle_tree_serial(&mut buffer, node_count);
     }
@@ -317,16 +319,17 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
 //
 // We can take advantage of the fact that the tree is a perfect binary tree
 // and process subtrees in parallel bottom-up.
-// For leaf_count = 4:
 
-//       0       <- Root (index 0)
-//    /     \
-//   1       2   <- Interior nodes
-//  / \     / \
-// 3   4   5   6 <- Leaf nodes
+//              0
+//       /            \
+//      1              2
+//    /    \        /    \
+//   3      4      5      6
+//  / \    / \    / \    / \
+// 7   8  9  10  11 12  13 14
 
-// Split for left subtree (nodes 1,3,4) and right subtree (nodes 2,5,6)
-fn compute_merkle_tree_parallel(buffer: &mut [u8], node_count: usize) {
+// Split tree into 4 subtrees
+fn compute_merkle_tree_parallel_4(buffer: &mut [u8], node_count: usize) {
     let nodes = split_merkle_tree_nodes(node_count);
 
     // Create buffers for each section
@@ -375,6 +378,85 @@ fn compute_merkle_tree_parallel(buffer: &mut [u8], node_count: usize) {
         &buffer[2 * BYTES_PER_CHUNK..3 * BYTES_PER_CHUNK],
     );
     buffer[..BYTES_PER_CHUNK].copy_from_slice(&root_hash);
+}
+
+// Split tree into 8 subtrees with roots (7, 8, 9, 10, 11, 12, 13, 14)
+//              0
+//       /            \
+//      1              2
+//    /    \        /    \
+//   3      4      5      6
+//  / \    / \    / \    / \
+// 7   8  9  10  11 12  13 14
+// /\  /\ /\  /\ /\  /\ /\  /\
+//15 16...              ...29 30
+fn compute_merkle_tree_parallel_8(buffer: &mut [u8], node_count: usize) {
+    let nodes = split_merkle_tree_nodes8(node_count);
+
+    // Create buffers for each of the 8 subtrees
+    let mut subtree_buffers = vec![
+        vec![0u8; nodes.subtree0.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree1.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree2.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree3.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree4.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree5.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree6.len() * BYTES_PER_CHUNK],
+        vec![0u8; nodes.subtree7.len() * BYTES_PER_CHUNK],
+    ];
+
+    // Copy data to subtree buffers
+    copy_nodes_to_buffer(buffer, &nodes.subtree0, &mut subtree_buffers[0]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree1, &mut subtree_buffers[1]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree2, &mut subtree_buffers[2]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree3, &mut subtree_buffers[3]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree4, &mut subtree_buffers[4]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree5, &mut subtree_buffers[5]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree6, &mut subtree_buffers[6]);
+    copy_nodes_to_buffer(buffer, &nodes.subtree7, &mut subtree_buffers[7]);
+
+    let subtree_buffer_len = subtree_buffers[0].len();
+    // Process all subtrees in parallel
+    rayon::scope(|s| {
+        for subtree_buffer in &mut subtree_buffers {
+            s.spawn(|_| process_subtree(subtree_buffer, subtree_buffer_len / BYTES_PER_CHUNK));
+        }
+    });
+
+    // Copy results back to the main buffer
+    copy_buffer_to_nodes(&subtree_buffers[0], &nodes.subtree0, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[1], &nodes.subtree1, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[2], &nodes.subtree2, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[3], &nodes.subtree3, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[4], &nodes.subtree4, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[5], &nodes.subtree5, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[6], &nodes.subtree6, buffer);
+    copy_buffer_to_nodes(&subtree_buffers[7], &nodes.subtree7, buffer);
+
+    // Compute higher level nodes in deterministic order
+    let mut level = 3; // Start at level 3 (nodes 7-14)
+
+    while level > 0 {
+        let start_idx = (1 << level) - 1;
+        let end_idx = (1 << (level + 1)) - 1;
+
+        for parent in (start_idx..end_idx).step_by(2) {
+            if parent + 1 >= node_count {
+                continue;
+            }
+
+            let hash = hash_chunks(
+                &buffer[parent * BYTES_PER_CHUNK..(parent + 1) * BYTES_PER_CHUNK],
+                &buffer[(parent + 1) * BYTES_PER_CHUNK..(parent + 2) * BYTES_PER_CHUNK],
+            );
+
+            let parent_idx = (parent - 1) / 2;
+            buffer[parent_idx * BYTES_PER_CHUNK..(parent_idx + 1) * BYTES_PER_CHUNK]
+                .copy_from_slice(&hash);
+        }
+
+        level -= 1;
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -436,6 +518,78 @@ fn split_merkle_tree_nodes(node_count: usize) -> SubtreeNodes {
     SubtreeNodes { left_left, left_right, right_left, right_right }
 }
 
+#[derive(Debug, PartialEq)]
+struct SubtreeNodes8 {
+    subtree0: Vec<usize>,
+    subtree1: Vec<usize>,
+    subtree2: Vec<usize>,
+    subtree3: Vec<usize>,
+    subtree4: Vec<usize>,
+    subtree5: Vec<usize>,
+    subtree6: Vec<usize>,
+    subtree7: Vec<usize>,
+}
+
+fn split_merkle_tree_nodes8(node_count: usize) -> SubtreeNodes8 {
+    let mut subtrees = SubtreeNodes8 {
+        subtree0: Vec::new(),
+        subtree1: Vec::new(),
+        subtree2: Vec::new(),
+        subtree3: Vec::new(),
+        subtree4: Vec::new(),
+        subtree5: Vec::new(),
+        subtree6: Vec::new(),
+        subtree7: Vec::new(),
+    };
+
+    // Skip root node (index 0) and level 1-2 nodes (1-6)
+    for i in 7..node_count {
+        // Determine the level of the current node (0-based)
+        let level = (i + 1).ilog2() as usize;
+        // Position within the current level
+        let pos_in_level = i - ((1 << level) - 1);
+
+        // For level 3 nodes (indices 7-14), they become the start of our subtrees
+        if level == 3 {
+            match i {
+                7 => subtrees.subtree0.push(i),
+                8 => subtrees.subtree1.push(i),
+                9 => subtrees.subtree2.push(i),
+                10 => subtrees.subtree3.push(i),
+                11 => subtrees.subtree4.push(i),
+                12 => subtrees.subtree5.push(i),
+                13 => subtrees.subtree6.push(i),
+                14 => subtrees.subtree7.push(i),
+                _ => unreachable!("Invalid level 3 index"),
+            }
+            continue;
+        }
+
+        // For deeper levels, assign based on their ancestor at level 3
+        if level > 3 {
+            let ancestor_at_level3 = {
+                let steps_up = level - 3;
+                let parent_pos = pos_in_level >> steps_up;
+                parent_pos + 7 // +7 because level 3 starts at index 7
+            };
+
+            match ancestor_at_level3 {
+                7 => subtrees.subtree0.push(i),
+                8 => subtrees.subtree1.push(i),
+                9 => subtrees.subtree2.push(i),
+                10 => subtrees.subtree3.push(i),
+                11 => subtrees.subtree4.push(i),
+                12 => subtrees.subtree5.push(i),
+                13 => subtrees.subtree6.push(i),
+                14 => subtrees.subtree7.push(i),
+                _ => unreachable!("Invalid ancestor index at level 3"),
+            }
+        }
+    }
+
+    subtrees
+}
+
 // Compute the Merkle tree serially.
 fn compute_merkle_tree_serial(buffer: &mut [u8], node_count: usize) {
     for i in (1..node_count).rev().step_by(2) {
@@ -458,6 +612,7 @@ fn compute_merkle_tree_serial(buffer: &mut [u8], node_count: usize) {
 }
 
 // Process a subtree of the Merkle tree.
+#[inline]
 fn process_subtree(buffer: &mut [u8], size: usize) {
     // No pairs to process
     if size < 2 {
@@ -716,6 +871,30 @@ mod tests {
         assert_eq!(nodes.left_right, Vec::<usize>::new());
         assert_eq!(nodes.right_left, Vec::<usize>::new());
         assert_eq!(nodes.right_right, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn test_split_merkle_tree_nodes8_16_leaves() {
+        //              0
+        //       /            \
+        //      1              2
+        //    /    \        /    \
+        //   3      4      5      6
+        //  / \    / \    / \    / \
+        // 7   8  9  10  11 12  13 14
+        // /\  /\ /\  /\ /\  /\ /\  /\
+        //15 16...              ...29 30
+
+        let nodes = split_merkle_tree_nodes8(31);
+
+        assert_eq!(nodes.subtree0, vec![7, 15, 16]);
+        assert_eq!(nodes.subtree1, vec![8, 17, 18]);
+        assert_eq!(nodes.subtree2, vec![9, 19, 20]);
+        assert_eq!(nodes.subtree3, vec![10, 21, 22]);
+        assert_eq!(nodes.subtree4, vec![11, 23, 24]);
+        assert_eq!(nodes.subtree5, vec![12, 25, 26]);
+        assert_eq!(nodes.subtree6, vec![13, 27, 28]);
+        assert_eq!(nodes.subtree7, vec![14, 29, 30]);
     }
 
     #[test]

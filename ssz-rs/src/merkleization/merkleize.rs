@@ -7,6 +7,7 @@ use crate::{
 };
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
+use std::thread;
 
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports
 // decoration.
@@ -300,7 +301,10 @@ pub fn compute_merkle_tree(chunks: &[u8], leaf_count: usize) -> Result<Tree, Err
     // Copy input chunks to leaf positions
     buffer[leaf_start..leaf_start + chunks.len()].copy_from_slice(chunks);
 
-    if leaf_count >= 16 {
+    // Detect number of CPU cores
+    let num_cores = thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+
+    if leaf_count >= 16 && num_cores >= 4 {
         compute_merkle_tree_parallel(&mut buffer, node_count);
     } else {
         compute_merkle_tree_serial(&mut buffer, node_count);

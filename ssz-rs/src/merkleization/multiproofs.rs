@@ -8,8 +8,6 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 
-use super::Tree;
-
 fn get_branch_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
     let mut focus = sibling(tree_index);
     let mut result = vec![focus];
@@ -33,7 +31,7 @@ fn get_path_indices(tree_index: GeneralizedIndex) -> Vec<GeneralizedIndex> {
 }
 
 // Returns the indices of the nodes that are needed to compute the root of a multiproof.
-fn get_helper_indices(indices: &[GeneralizedIndex]) -> Vec<GeneralizedIndex> {
+pub fn get_helper_indices(indices: &[GeneralizedIndex]) -> Vec<GeneralizedIndex> {
     let mut all_helper_indices = HashSet::new();
     let mut all_path_indices = HashSet::new();
 
@@ -163,36 +161,8 @@ pub fn verify_merkle_multiproof(
     }
 }
 
-impl Tree {
-    /// Generate a multiproof for multiple leaves in the Merkle tree
-    pub fn generate_merkle_multiproof(
-        &self,
-        indices: &[GeneralizedIndex],
-    ) -> Result<Vec<Node>, Error> {
-        // Validate indices
-        if indices.is_empty() {
-            return Err(Error::InvalidProof);
-        }
-
-        // Get branch indices needed for proof
-        let helper_indices = get_helper_indices(indices);
-
-        // Extract proof nodes from the merkle tree
-        let mut proof_nodes = Vec::new();
-        for &index in helper_indices.iter() {
-            let node_data = &self[index];
-            let node = Node::try_from(node_data).expect("valid node size");
-            proof_nodes.push(node);
-        }
-
-        Ok(proof_nodes)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::merkleization::{compute_merkle_tree, BYTES_PER_CHUNK};
-
     use super::*;
 
     #[test]
@@ -277,54 +247,6 @@ mod tests {
             result.is_ok(),
             "Multiproof verification failed for multiple leaves in a deeper tree"
         );
-    }
-
-    #[test]
-    fn test_multiproof_generation_and_verification() {
-        //             1 (root)
-        //             /                    \
-        //            2                      3
-        //       /          \           /         \
-        //      4            5         6           7
-        //    /   \        /  \     /   \       /   \
-        //   8     9     10    11  12    13    14    15  <-- Generaliced indices
-        // [0]   [1]    [2]   [3] [4]   [5]   [6]   [7]  <-- Data values (first byte)
-        // Create sample data
-        let mut data = vec![0u8; 8 * BYTES_PER_CHUNK];
-        for i in 0..8 {
-            data[i * BYTES_PER_CHUNK] = i as u8;
-        }
-        let mut hasher = Sha256::new();
-
-        // Create merkle tree
-        let tree = compute_merkle_tree(&mut hasher, &data, 8).expect("can create tree");
-
-        // Generate proof for leaves at indices 2 and 5
-        let indices = vec![10, 13]; // Generalized indices for leaves 2 and 5
-        let proof = tree.generate_merkle_multiproof(&indices).expect("can generate multiproof");
-
-        // Get the actual leaves for verification
-        let mut leaves = Vec::new();
-        for &index in indices.iter() {
-            let leaf_data = &tree[index];
-            let leaf = Node::try_from(leaf_data).expect("valid node size");
-            leaves.push(leaf);
-        }
-
-        // Verify the generated proof
-        let root = tree[1].try_into().expect("valid root");
-        assert!(verify_merkle_multiproof(&leaves, &proof, &indices, root).is_ok());
-    }
-
-    #[test]
-    fn test_invalid_indices() {
-        let data = vec![0u8; 4 * BYTES_PER_CHUNK];
-        let mut hasher = Sha256::new();
-        let tree = compute_merkle_tree(&mut hasher, &data, 4).expect("can create tree");
-
-        // Empty indices should fail
-        let indices = vec![];
-        assert!(tree.generate_merkle_multiproof(&indices).is_err());
     }
 
     // Helper function to create a node with a specific value

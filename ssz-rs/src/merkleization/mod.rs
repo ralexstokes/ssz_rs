@@ -1,5 +1,5 @@
 pub mod generalized_index;
-mod merkleize;
+pub mod merkleize;
 pub mod multiproofs;
 mod node;
 pub mod proofs;

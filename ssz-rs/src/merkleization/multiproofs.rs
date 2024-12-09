@@ -163,28 +163,30 @@ pub fn verify_merkle_multiproof(
     }
 }
 
-/// Generate a multiproof for multiple leaves in a Merkle tree
-pub fn generate_merkle_multiproof(
-    tree: &Tree,
-    indices: &[GeneralizedIndex],
-) -> Result<Vec<Node>, Error> {
-    // Validate indices
-    if indices.is_empty() {
-        return Err(Error::InvalidProof);
+impl Tree {
+    /// Generate a multiproof for multiple leaves in the Merkle tree
+    pub fn generate_merkle_multiproof(
+        &self,
+        indices: &[GeneralizedIndex],
+    ) -> Result<Vec<Node>, Error> {
+        // Validate indices
+        if indices.is_empty() {
+            return Err(Error::InvalidProof);
+        }
+
+        // Get branch indices needed for proof
+        let helper_indices = get_helper_indices(indices);
+
+        // Extract proof nodes from the merkle tree
+        let mut proof_nodes = Vec::new();
+        for &index in helper_indices.iter() {
+            let node_data = &self[index];
+            let node = Node::try_from(node_data).expect("valid node size");
+            proof_nodes.push(node);
+        }
+
+        Ok(proof_nodes)
     }
-
-    // Get branch indices needed for proof
-    let helper_indices = get_helper_indices(indices);
-
-    // Extract proof nodes from the merkle tree
-    let mut proof_nodes = Vec::new();
-    for &index in helper_indices.iter() {
-        let node_data = &tree[index];
-        let node = Node::try_from(node_data).expect("valid node size");
-        proof_nodes.push(node);
-    }
-
-    Ok(proof_nodes)
 }
 
 #[cfg(test)]
@@ -299,7 +301,7 @@ mod tests {
 
         // Generate proof for leaves at indices 2 and 5
         let indices = vec![10, 13]; // Generalized indices for leaves 2 and 5
-        let proof = generate_merkle_multiproof(&tree, &indices).expect("can generate multiproof");
+        let proof = tree.generate_merkle_multiproof(&indices).expect("can generate multiproof");
 
         // Get the actual leaves for verification
         let mut leaves = Vec::new();
@@ -322,7 +324,7 @@ mod tests {
 
         // Empty indices should fail
         let indices = vec![];
-        assert!(generate_merkle_multiproof(&tree, &indices).is_err());
+        assert!(tree.generate_merkle_multiproof(&indices).is_err());
     }
 
     // Helper function to create a node with a specific value

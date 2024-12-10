@@ -9,6 +9,8 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 
+use super::multiproofs;
+
 /// Convenience type for a Merkle proof and the root of the Merkle tree, which serves as
 /// "witness" that the proof is valid.
 pub type ProofAndWitness = (Proof, Node);
@@ -115,6 +117,62 @@ impl Prover {
 
         Ok(())
     }
+
+    fn compute_multi_proof<T: Prove + ?Sized>(
+        &mut self,
+        data: &T,
+        indices: &[GeneralizedIndex],
+    ) -> Result<(MultiProof, Node), Error> {
+        let chunk_count = T::chunk_count();
+        let mut leaf_count = chunk_count.next_power_of_two();
+        // Double the leaf count to account for the decoration layer
+        let decoration = data.decoration();
+        if decoration.is_some() {
+            leaf_count *= 2;
+        }
+
+        // Build the tree once
+        let chunks = data.chunks()?;
+        let mut tree = compute_merkle_tree(&mut self.hasher, &chunks, leaf_count)?;
+        if let Some(decoration) = decoration {
+            tree.mix_in_decoration(decoration, &mut self.hasher)?;
+        }
+
+        let mut leaves = Vec::with_capacity(indices.len());
+        let mut normalized_indices = Vec::with_capacity(indices.len());
+
+        // Process each index
+        for &parent_index in indices {
+            // Compute the local coordinates of the parent index
+            let (local_depth, _, local_generalized_index) =
+                compute_local_merkle_coordinates(parent_index, leaf_count)?;
+
+            // Check if the leaf is local to the current object
+            if local_generalized_index < parent_index {
+                let parent_depth = get_depth(parent_index)?;
+                let child_depth = parent_depth - local_depth;
+                let node_count = 2usize.pow(child_depth);
+                let child_index = node_count + parent_index % node_count;
+                leaves.push(Node::try_from(&tree[child_index][..]).expect("valid node size"));
+                normalized_indices.push(child_index);
+            } else {
+                leaves.push(Node::try_from(&tree[parent_index][..]).expect("valid node size"));
+                normalized_indices.push(parent_index);
+            }
+        }
+
+        // Get helper indices for the proof
+        let helper_indices = multiproofs::get_helper_indices(&normalized_indices);
+        let branch = helper_indices
+            .iter()
+            .map(|&index| Node::try_from(&tree[index][..]).expect("valid node size"))
+            .collect();
+
+        // Construct the witness
+        let witness = Node::try_from(&tree[1][..]).expect("valid node size");
+
+        Ok((MultiProof { leaves, branch, indices: normalized_indices }, witness))
+    }
 }
 
 impl From<Prover> for ProofAndWitness {
@@ -165,6 +223,16 @@ pub trait Prove: GeneralizedIndexable {
         prover.compute_proof(self)?;
         Ok(prover.into())
     }
+
+    /// Compute a Multi Merkle proof of `Self` at the type's `paths`, along with the root of the
+    /// Merkle tree as a witness value.
+    fn multi_prove(&self, paths: &[Path]) -> Result<(MultiProof, Node), Error> {
+        let indices =
+            paths.iter().map(|x| Self::generalized_index(x)).collect::<Result<Vec<_>, _>>()?;
+
+        let mut prover = Prover::from(indices[0]);
+        prover.compute_multi_proof(self, &indices)
+    }
 }
 
 /// Contains data necessary to verify `leaf` was included under some witness "root" node
@@ -182,6 +250,24 @@ impl Proof {
     /// See `Prover` for further information.
     pub fn verify(&self, root: Node) -> Result<(), Error> {
         is_valid_merkle_branch_for_generalized_index(self.leaf, &self.branch, self.index, root)
+    }
+}
+
+/// Contains data necessary to verify `leaf` was included under some witness "root" node
+/// at the generalized position `index`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MultiProof {
+    pub leaves: Vec<Node>,
+    pub branch: Vec<Node>,
+    pub indices: Vec<GeneralizedIndex>,
+}
+
+impl MultiProof {
+    /// Verify `self` against the provided `root` witness node.
+    /// This `root` is the hash tree root of the SSZ object that produced the proof.
+    /// See `Prover` for further information.
+    pub fn verify(&self, root: Node) -> Result<(), Error> {
+        multiproofs::verify_merkle_multiproof(&self.leaves, &self.branch, &self.indices, root)
     }
 }
 
@@ -207,7 +293,7 @@ pub fn is_valid_merkle_branch(
     root: Node,
 ) -> Result<(), Error> {
     if branch.len() != depth {
-        return Err(Error::InvalidProof)
+        return Err(Error::InvalidProof);
     }
 
     let mut derived_root = leaf;
@@ -236,6 +322,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::prelude::*;
     use alloy_primitives::hex::FromHex;
+    use multiproofs::verify_merkle_multiproof;
 
     pub(crate) fn decode_node_from_hex(hex: &str) -> Node {
         Node::from_hex(hex).unwrap()
@@ -297,12 +384,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_list_proving() {
-        let inner: Vec<List<u8, 1073741824>> = vec![
-            vec![0u8, 1u8, 2u8].try_into().unwrap(),
-            vec![3u8, 4u8, 5u8].try_into().unwrap(),
-            vec![6u8, 7u8, 8u8].try_into().unwrap(),
-            vec![9u8, 10u8, 11u8].try_into().unwrap(),
-        ];
+        let inner = create_test_list();
 
         // Emulate a transactions tree
         let outer: List<List<u8, 1073741824>, 1048576> = List::try_from(inner).unwrap();
@@ -363,5 +445,168 @@ pub(crate) mod tests {
 
         let data = false;
         compute_and_verify_proof_for_path(&data, &[]);
+    }
+
+    #[test]
+    fn test_basic_multi_proof() {
+        let list = create_test_list();
+        let root = list.hash_tree_root().unwrap();
+
+        // Test sequential indices
+        let paths = &[&[PathElement::from(1)][..], &[PathElement::from(2)][..]];
+        let (proof, witness) = list.multi_prove(paths).unwrap();
+
+        assert_eq!(proof.indices.len(), 2, "Proof should contain exactly two indices");
+        assert_eq!(proof.leaves.len(), 2, "Proof should contain exactly two leaves");
+        assert!(proof.verify(witness).is_ok(), "Proof verification should succeed");
+        assert_eq!(root, witness, "Witness should match the root hash");
+    }
+
+    #[test]
+    fn test_empty_list_multi_proof() {
+        let empty_list: List<u8, 32> = List::default();
+        let root = empty_list.hash_tree_root().unwrap();
+
+        // Test length proof for empty list
+        let paths = &[&[PathElement::Length][..]];
+        let (proof, witness) = empty_list.multi_prove(paths).unwrap();
+
+        assert_eq!(root, witness, "Empty list witness should match root");
+        assert!(proof.verify(witness).is_ok(), "Empty list proof verification should succeed");
+    }
+
+    #[test]
+    fn test_mixed_proof_types() {
+        let list: List<u8, 32> = List::try_from(vec![1, 2, 3]).unwrap();
+        let root = list.hash_tree_root().unwrap();
+
+        // Test both length and element proofs together
+        let paths = &[&[PathElement::Length][..], &[1.into()][..]];
+        let (proof, witness) = list.multi_prove(paths).unwrap();
+
+        assert!(proof.verify(witness).is_ok(), "Mixed proof verification should succeed");
+        assert_eq!(root, witness, "Mixed proof witness should match root");
+    }
+
+    #[test]
+    fn test_non_sequential_indices() {
+        let list = create_test_list();
+
+        // Test indices with gaps
+        let paths = &[&[0.into()][..], &[2.into()][..], &[3.into()][..]];
+        let (proof, witness) = list.multi_prove(paths).unwrap();
+
+        assert!(proof.verify(witness).is_ok(), "Non-sequential indices proof should succeed");
+        assert_eq!(list.hash_tree_root().unwrap(), witness);
+    }
+
+    #[test]
+    fn test_boundary_cases() {
+        let list: List<u8, 4> = List::try_from(vec![1, 2, 3, 4]).unwrap();
+
+        // Test first, last, and length in one proof
+        let paths = &[&[0.into()][..], &[3.into()][..], &[PathElement::Length][..]];
+        let (proof, witness) = list.multi_prove(paths).unwrap();
+
+        assert!(proof.verify(witness).is_ok(), "Boundary case proof should succeed");
+        assert_eq!(list.hash_tree_root().unwrap(), witness);
+    }
+
+    #[test]
+    fn test_single_vs_multi_proof_equivalence() {
+        let list = create_test_list();
+        let path = &[PathElement::from(1)][..];
+
+        // Generate both types of proofs
+        let (single_proof, single_witness) = list.prove(path).unwrap();
+        let (multi_proof, multi_witness) = list.multi_prove(&[path]).unwrap();
+
+        assert_eq!(single_witness, multi_witness, "Witnesses should match");
+        assert_eq!(list.hash_tree_root().unwrap(), single_witness, "Witness should match root");
+        assert_eq!(single_proof.leaf, multi_proof.leaves[0], "Leaves should match");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_index() {
+        let list: List<u8, 4> = List::try_from(vec![1, 2]).unwrap();
+        let paths = &[&[4.into()][..]]; // Index out of bounds
+        let _ = list.multi_prove(paths).unwrap();
+    }
+
+    #[test]
+    fn test_nested_multi_level_proofs() {
+        type NestedList = List<List<List<u8, 16>, 32>, 64>;
+
+        let inner = vec![0u8, 1u8, 2u8].try_into().unwrap();
+        let middle = vec![inner].try_into().unwrap();
+        let outer: NestedList = vec![middle].try_into().unwrap();
+
+        let paths = &[
+            &[0.into(), 0.into(), 1.into()][..],  // Deep element
+            &[PathElement::Length][..],           // Outer length
+            &[0.into(), PathElement::Length][..], // Middle length
+        ];
+
+        let (proof, witness) = outer.multi_prove(paths).unwrap();
+        assert!(proof.verify(witness).is_ok());
+        assert_eq!(outer.hash_tree_root().unwrap(), witness);
+    }
+
+    #[test]
+    fn test_same_subtree_elements() {
+        let list: List<u8, 32> = List::try_from(vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+
+        // Elements 4 and 5 share the same parent in the Merkle tree
+        let paths = &[&[4.into()][..], &[5.into()][..]];
+        let (proof, witness) = list.multi_prove(paths).unwrap();
+
+        assert!(proof.verify(witness).is_ok());
+        assert_eq!(list.hash_tree_root().unwrap(), witness);
+        // Branch should be optimized since elements share a parent
+        assert!(
+            proof.branch.len() < proof.leaves.len() * get_depth(proof.indices[0]).unwrap() as usize
+        );
+    }
+
+    #[test]
+    fn test_max_size_list() {
+        let list: List<u8, 4> = List::try_from(vec![1, 2, 3, 4]).unwrap();
+
+        // Test all elements and length in one proof
+        let paths = &[
+            &[0.into()][..],
+            &[1.into()][..],
+            &[2.into()][..],
+            &[3.into()][..],
+            &[PathElement::Length][..],
+        ];
+
+        let (proof, witness) = list.multi_prove(paths).unwrap();
+        assert!(proof.verify(witness).is_ok());
+        assert_eq!(list.hash_tree_root().unwrap(), witness);
+    }
+
+    #[test]
+    fn test_generate_verify_merkle_multiproof() {
+        let list: List<u8, 32> = List::try_from(vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let paths = &[&[1.into()][..], &[3.into()][..], &[5.into()][..]];
+        let (proof, witness) = list.multi_prove(paths).unwrap();
+
+        // Verify the proof
+        let result =
+            verify_merkle_multiproof(&proof.leaves, &proof.branch, &proof.indices, witness);
+        assert!(result.is_ok(), "Merkle multi-proof verification should succeed");
+    }
+
+    // Helper function to create test data
+    fn create_test_list() -> List<List<u8, 1073741824>, 1048576> {
+        let inner: Vec<List<u8, 1073741824>> = vec![
+            vec![0u8, 1u8, 2u8].try_into().unwrap(),
+            vec![3u8, 4u8, 5u8].try_into().unwrap(),
+            vec![6u8, 7u8, 8u8].try_into().unwrap(),
+            vec![9u8, 10u8, 11u8].try_into().unwrap(),
+        ];
+        List::try_from(inner).unwrap()
     }
 }

@@ -138,8 +138,8 @@ impl Prover {
             tree.mix_in_decoration(decoration, &mut self.hasher)?;
         }
 
-        let mut leaves = Vec::new();
-        let mut normalized_indices = Vec::new();
+        let mut leaves = Vec::with_capacity(indices.len());
+        let mut normalized_indices = Vec::with_capacity(indices.len());
 
         // Process each index
         for &parent_index in indices {

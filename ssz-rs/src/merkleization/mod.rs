@@ -3,6 +3,7 @@ mod merkleize;
 pub mod multiproofs;
 mod node;
 pub mod proofs;
+mod hasher;
 
 use crate::{lib::*, ser::SerializeError};
 pub use generalized_index::{

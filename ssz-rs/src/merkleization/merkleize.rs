@@ -7,7 +7,6 @@ use crate::{
 };
 #[cfg(feature = "serde")]
 use alloy_primitives::hex::FromHex;
-use once_cell::sync::Lazy;
 use std::thread;
 
 // The generalized index for the root of the "decorated" type in any Merkleized type that supports

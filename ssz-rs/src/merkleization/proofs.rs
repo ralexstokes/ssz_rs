@@ -45,7 +45,6 @@ pub(crate) fn compute_local_merkle_coordinates(
 /// A type that knows how to compute Merkle proofs assuming a target type is `Prove`.
 #[derive(Debug)]
 pub struct Prover {
-    hasher: Sha256,
     proof: Proof,
     witness: Node,
 }
@@ -94,9 +93,9 @@ impl Prover {
             is_leaf_local = true;
         }
         let chunks = data.chunks()?;
-        let mut tree = compute_merkle_tree(&mut self.hasher, &chunks, leaf_count)?;
+        let mut tree = compute_merkle_tree(&chunks, leaf_count)?;
         if let Some(decoration) = decoration {
-            tree.mix_in_decoration(decoration, &mut self.hasher)?;
+            tree.mix_in_decoration(decoration)?;
         }
 
         if is_leaf_local {
@@ -126,7 +125,6 @@ impl From<Prover> for ProofAndWitness {
 impl From<GeneralizedIndex> for Prover {
     fn from(index: GeneralizedIndex) -> Self {
         Self {
-            hasher: Sha256::new(),
             proof: Proof { leaf: Default::default(), branch: vec![], index },
             witness: Default::default(),
         }

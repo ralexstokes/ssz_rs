@@ -102,6 +102,7 @@ mod serde;
 mod uint;
 mod union;
 mod vector;
+mod visitor;
 
 mod lib {
     mod core {
@@ -154,7 +155,10 @@ pub trait Serializable: Serialize + Deserialize {
 /// `SimpleSerialize` is a trait for types conforming to the SSZ spec.
 /// These types can be encoded and decoded while also supporting the
 /// merkelization scheme of SSZ.
-pub trait SimpleSerialize: Serializable + HashTreeRoot + GeneralizedIndexable + Prove {}
+pub trait SimpleSerialize:
+    Serializable + HashTreeRoot + GeneralizedIndexable + Chunkable + Visitable
+{
+}
 
 mod exports {
     pub use crate::{
@@ -166,13 +170,14 @@ mod exports {
         merkleization::{
             generalized_index::default_generalized_index,
             multiproofs,
-            proofs::{self, is_valid_merkle_branch, Prove},
+            proofs::{self, is_valid_merkle_branch, Chunkable, Prove},
             GeneralizedIndex, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node, Path,
-            PathElement,
+            PathElement, Tree,
         },
         ser::{Serialize, SerializeError},
         uint::U256,
         vector::Vector,
+        visitor::{Visitable, Visitor, VisitorError},
     };
 
     /// `serialize` is a convenience function for taking a value that
@@ -210,7 +215,7 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate as ssz_rs;
     pub use ssz_rs_derive::{
-        GeneralizedIndexable, HashTreeRoot, Prove, Serializable, SimpleSerialize,
+        Chunkable, GeneralizedIndexable, HashTreeRoot, Serializable, SimpleSerialize, Visitable,
     };
 }
 

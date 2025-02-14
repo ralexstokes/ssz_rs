@@ -2,10 +2,11 @@ use crate::{
     de::{Deserialize, DeserializeError},
     lib::*,
     merkleization::{
-        proofs::Prove, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node,
+        proofs::Chunkable, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node,
         BYTES_PER_CHUNK,
     },
     ser::{Serialize, SerializeError},
+    visitor::Visitable,
     Serializable, SimpleSerialize,
 };
 
@@ -62,7 +63,9 @@ impl GeneralizedIndexable for bool {
     }
 }
 
-impl Prove for bool {
+impl Visitable for bool {}
+
+impl Chunkable for bool {
     fn chunks(&self) -> Result<Vec<u8>, MerkleizationError> {
         let mut vec = vec![0u8; BYTES_PER_CHUNK];
         if *self {

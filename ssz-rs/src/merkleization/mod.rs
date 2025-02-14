@@ -4,7 +4,7 @@ pub mod multiproofs;
 mod node;
 pub mod proofs;
 
-use crate::{lib::*, ser::SerializeError};
+use crate::{lib::*, ser::SerializeError, visitor};
 pub use generalized_index::{
     get_power_of_two_ceil, GeneralizedIndex, GeneralizedIndexable, Path, PathElement,
 };
@@ -36,11 +36,19 @@ pub enum MerkleizationError {
     NoInnerElement,
     /// Attempt to turn an instance of a type in Merkle chunks when this is not supported
     NotChunkable,
+    /// Error encountered while traversing the SSZ type
+    Visitor(visitor::VisitorError),
 }
 
 impl From<SerializeError> for MerkleizationError {
     fn from(err: SerializeError) -> Self {
         MerkleizationError::SerializationError(err)
+    }
+}
+
+impl From<visitor::VisitorError> for MerkleizationError {
+    fn from(err: visitor::VisitorError) -> Self {
+        MerkleizationError::Visitor(err)
     }
 }
 
@@ -63,6 +71,7 @@ impl Display for MerkleizationError {
             Self::NotChunkable => {
                 write!(f, "requested to compute chunks for a type which does not support this")
             }
+            Self::Visitor(err) => write!(f, "visitor error: {err}"),
         }
     }
 }

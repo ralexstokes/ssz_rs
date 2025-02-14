@@ -3,12 +3,12 @@ use crate::{
     error::{Error, InstanceError, TypeError},
     lib::*,
     merkleization::{
-        elements_to_chunks, get_power_of_two_ceil, merkleize, pack,
-        proofs::{Prove, Prover},
+        elements_to_chunks, get_power_of_two_ceil, merkleize, pack, proofs::Chunkable,
         GeneralizedIndex, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node, Path,
         PathElement,
     },
     ser::{Serialize, SerializeError, Serializer},
+    visitor::{self, Visitable, Visitor},
     Serializable, SimpleSerialize,
 };
 
@@ -40,7 +40,7 @@ impl<T: Serializable, const N: usize> TryFrom<Vec<T>> for Vector<T, N> {
 
     fn try_from(data: Vec<T>) -> Result<Self, Self::Error> {
         if N == 0 {
-            return Err((data, Error::Type(TypeError::InvalidBound(N))))
+            return Err((data, Error::Type(TypeError::InvalidBound(N))));
         }
         if data.len() != N {
             let len = data.len();
@@ -59,7 +59,7 @@ where
 
     fn try_from(data: &[T]) -> Result<Self, Self::Error> {
         if N == 0 {
-            return Err(Error::Type(TypeError::InvalidBound(N)))
+            return Err(Error::Type(TypeError::InvalidBound(N)));
         }
         if data.len() != N {
             let len = data.len();
@@ -164,7 +164,7 @@ where
 {
     fn serialize(&self, buffer: &mut Vec<u8>) -> Result<usize, SerializeError> {
         if N == 0 {
-            return Err(TypeError::InvalidBound(N).into())
+            return Err(TypeError::InvalidBound(N).into());
         }
         let mut serializer = Serializer::default();
         for element in &self.data {
@@ -180,7 +180,7 @@ where
 {
     fn deserialize(encoding: &[u8]) -> Result<Self, DeserializeError> {
         if N == 0 {
-            return Err(TypeError::InvalidBound(N).into())
+            return Err(TypeError::InvalidBound(N).into());
         }
         if !T::is_variable_size() {
             let expected_length = N * T::size_hint();
@@ -188,13 +188,13 @@ where
                 return Err(DeserializeError::ExpectedFurtherInput {
                     provided: encoding.len(),
                     expected: expected_length,
-                })
+                });
             }
             if encoding.len() > expected_length {
                 return Err(DeserializeError::AdditionalInput {
                     provided: encoding.len(),
                     expected: expected_length,
-                })
+                });
             }
         }
         let inner = deserialize_homogeneous_composite(encoding)?;
@@ -251,7 +251,7 @@ where
             match next {
                 PathElement::Index(i) => {
                     if *i >= N {
-                        return Err(MerkleizationError::InvalidPathElement(next.clone()))
+                        return Err(MerkleizationError::InvalidPathElement(next.clone()));
                     }
                     let chunk_position = i * T::item_length() / 32;
                     let child =
@@ -266,21 +266,30 @@ where
     }
 }
 
-impl<T, const N: usize> Prove for Vector<T, N>
+impl<T, const N: usize> Visitable for Vector<T, N>
+where
+    T: SimpleSerialize + Visitable,
+{
+    fn visit_element<V: Visitor>(&self, index: usize, visitor: &mut V) -> Result<(), V::Error> {
+        if index >= N {
+            Err(visitor::VisitorError::InvalidInnerIndex.into())
+        } else {
+            let child = &self[index];
+            visitor.visit(child)
+        }
+    }
+
+    fn element_count(&self) -> usize {
+        N
+    }
+}
+
+impl<T, const N: usize> Chunkable for Vector<T, N>
 where
     T: SimpleSerialize,
 {
     fn chunks(&self) -> Result<Vec<u8>, MerkleizationError> {
         self.assemble_chunks()
-    }
-
-    fn prove_element(&self, index: usize, prover: &mut Prover) -> Result<(), MerkleizationError> {
-        if index >= N {
-            Err(MerkleizationError::InvalidInnerIndex)
-        } else {
-            let child = &self[index];
-            prover.compute_proof(child)
-        }
     }
 }
 
@@ -321,7 +330,12 @@ impl<'de, T: Serializable + serde::Deserialize<'de>, const N: usize> serde::Dese
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lib::cmp::Ordering, list::List, serialize, U256};
+    use crate::{
+        lib::cmp::Ordering,
+        list::List,
+        proofs::{Prove, Prover},
+        serialize, U256,
+    };
 
     const COUNT: usize = 32;
 

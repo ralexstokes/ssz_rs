@@ -4,11 +4,11 @@ use crate::{
     lib::*,
     merkleization::{
         elements_to_chunks, get_power_of_two_ceil, merkleize, mix_in_length, pack,
-        proofs::{Prove, Prover},
-        GeneralizedIndex, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node, Path,
-        PathElement, BYTES_PER_CHUNK,
+        proofs::Chunkable, GeneralizedIndex, GeneralizedIndexable, HashTreeRoot,
+        MerkleizationError, Node, Path, PathElement, BYTES_PER_CHUNK,
     },
     ser::{Serialize, SerializeError, Serializer},
+    visitor::{self, Visitable, Visitor},
     Serializable, SimpleSerialize,
 };
 
@@ -153,7 +153,7 @@ where
 {
     fn serialize(&self, buffer: &mut Vec<u8>) -> Result<usize, SerializeError> {
         if self.len() > N {
-            return Err(InstanceError::Bounded { bound: N, provided: self.len() }.into())
+            return Err(InstanceError::Bounded { bound: N, provided: self.len() }.into());
         }
         let mut serializer = Serializer::default();
         for element in &self.data {
@@ -176,13 +176,13 @@ where
                     // SAFETY: checked subtraction is unnecessary, as encoding.len() > remainder;
                     // qed
                     expected: encoding.len() - remainder,
-                })
+                });
             }
         }
 
         let result = deserialize_homogeneous_composite(encoding)?;
         if result.len() > N {
-            return Err(InstanceError::Bounded { bound: N, provided: result.len() }.into())
+            return Err(InstanceError::Bounded { bound: N, provided: result.len() }.into());
         }
         let result = result.try_into().map_err(|(_, err)| match err {
             Error::Instance(err) => DeserializeError::InvalidInstance(err),
@@ -251,13 +251,13 @@ where
             match next {
                 PathElement::Index(i) => {
                     if *i >= N {
-                        return Err(MerkleizationError::InvalidPathElement(next.clone()))
+                        return Err(MerkleizationError::InvalidPathElement(next.clone()));
                     }
                     let chunk_position = i * T::item_length() / 32;
-                    let child = parent *
-                        2 *
-                        get_power_of_two_ceil(<Self as GeneralizedIndexable>::chunk_count()) +
-                        chunk_position;
+                    let child = parent
+                        * 2
+                        * get_power_of_two_ceil(<Self as GeneralizedIndexable>::chunk_count())
+                        + chunk_position;
                     T::compute_generalized_index(child, rest)
                 }
                 PathElement::Length => {
@@ -275,21 +275,30 @@ where
     }
 }
 
-impl<T, const N: usize> Prove for List<T, N>
+impl<T, const N: usize> Visitable for List<T, N>
+where
+    T: SimpleSerialize + Visitable,
+{
+    fn visit_element<V: Visitor>(&self, index: usize, visitor: &mut V) -> Result<(), V::Error> {
+        if index >= N {
+            Err(visitor::VisitorError::InvalidInnerIndex.into())
+        } else {
+            let child = &self[index];
+            visitor.visit(child)
+        }
+    }
+
+    fn element_count(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T, const N: usize> Chunkable for List<T, N>
 where
     T: SimpleSerialize,
 {
     fn chunks(&self) -> Result<Vec<u8>, MerkleizationError> {
         self.assemble_chunks()
-    }
-
-    fn prove_element(&self, index: usize, prover: &mut Prover) -> Result<(), MerkleizationError> {
-        if index >= N {
-            Err(MerkleizationError::InvalidInnerIndex)
-        } else {
-            let child = &self[index];
-            prover.compute_proof(child)
-        }
     }
 
     fn decoration(&self) -> Option<usize> {

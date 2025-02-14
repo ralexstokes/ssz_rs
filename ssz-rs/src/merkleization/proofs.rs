@@ -6,6 +6,8 @@ use crate::{
         compute_merkle_tree, GeneralizedIndex, GeneralizedIndexable, MerkleizationError as Error,
         Node, Path,
     },
+    visitor::Visitor,
+    SimpleSerialize,
 };
 use sha2::{Digest, Sha256};
 
@@ -65,8 +67,15 @@ impl Prover {
         self.witness = witness.try_into().expect("is correct size");
     }
 
-    /// Derive a Merkle proof relative to `data` given the parameters in `self`.
-    pub fn compute_proof<T: Prove + ?Sized>(&mut self, data: &T) -> Result<(), Error> {
+    pub fn compute_proof<T: SimpleSerialize + ?Sized>(&mut self, data: &T) -> Result<(), Error> {
+        self.visit(data)
+    }
+}
+
+impl Visitor for Prover {
+    type Error = Error;
+
+    fn visit<T: SimpleSerialize + ?Sized>(&mut self, data: &T) -> Result<(), Self::Error> {
         let chunk_count = T::chunk_count();
         let mut leaf_count = chunk_count.next_power_of_two();
         let parent_index = self.proof.index;
@@ -87,7 +96,7 @@ impl Prover {
             let node_count = 2usize.pow(child_depth);
             let child_index = node_count + parent_index % node_count;
             self.proof.index = child_index;
-            data.prove_element(local_index, self)?;
+            data.visit_element(local_index, self)?;
             self.proof.index = parent_index;
         } else {
             // NOTE: leaf is within the current object, set a flag to grab from merkle tree later
@@ -134,19 +143,12 @@ impl From<GeneralizedIndex> for Prover {
 }
 
 /// Required functionality to support computing Merkle proofs.
-pub trait Prove: GeneralizedIndexable {
+pub trait Chunkable: GeneralizedIndexable {
     /// Compute the "chunks" of this type as required for the SSZ merkle tree computation.
     /// Default implementation signals an error. Implementing types should override
     /// to provide the correct behavior.
     fn chunks(&self) -> Result<Vec<u8>, Error> {
         Err(Error::NotChunkable)
-    }
-
-    /// Construct a proof of the member element located at the type-specific `index` assuming the
-    /// context in `prover`.
-    #[allow(unused)]
-    fn prove_element(&self, index: usize, prover: &mut Prover) -> Result<(), Error> {
-        Err(Error::NoInnerElement)
     }
 
     /// Returns the "decoration" if this type has any in the Merkle tree.
@@ -156,16 +158,20 @@ pub trait Prove: GeneralizedIndexable {
     fn decoration(&self) -> Option<usize> {
         None
     }
+}
 
+pub trait Prove: SimpleSerialize {
     /// Compute a Merkle proof of `Self` at the type's `path`, along with the root of the Merkle
     /// tree as a witness value.
     fn prove(&self, path: Path) -> Result<ProofAndWitness, Error> {
         let index = Self::generalized_index(path)?;
         let mut prover = Prover::from(index);
-        prover.compute_proof(self)?;
+        prover.visit(self)?;
         Ok(prover.into())
     }
 }
+
+impl<T> Prove for T where T: SimpleSerialize {}
 
 /// Contains data necessary to verify `leaf` was included under some witness "root" node
 /// at the generalized position `index`.
@@ -207,7 +213,7 @@ pub fn is_valid_merkle_branch(
     root: Node,
 ) -> Result<(), Error> {
     if branch.len() != depth {
-        return Err(Error::InvalidProof)
+        return Err(Error::InvalidProof);
     }
 
     let mut derived_root = leaf;

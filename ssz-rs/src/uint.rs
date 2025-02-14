@@ -2,10 +2,11 @@ use crate::{
     de::{Deserialize, DeserializeError},
     lib::*,
     merkleization::{
-        pack_bytes, proofs::Prove, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node,
-        BYTES_PER_CHUNK,
+        pack_bytes, proofs::Chunkable, GeneralizedIndexable, HashTreeRoot, MerkleizationError,
+        Node, BYTES_PER_CHUNK,
     },
     ser::{Serialize, SerializeError},
+    visitor::Visitable,
     Serializable, SimpleSerialize, BITS_PER_BYTE,
 };
 
@@ -40,13 +41,13 @@ macro_rules! define_uint {
                     return Err(DeserializeError::ExpectedFurtherInput {
                         provided: encoding.len(),
                         expected: byte_size,
-                    })
+                    });
                 }
                 if encoding.len() > byte_size {
                     return Err(DeserializeError::AdditionalInput {
                         provided: encoding.len(),
                         expected: byte_size,
-                    })
+                    });
                 }
 
                 // SAFETY: index is safe because encoding.len() has been checked above; qed
@@ -72,7 +73,9 @@ macro_rules! define_uint {
             }
         }
 
-        impl Prove for $uint {
+        impl Visitable for $uint {}
+
+        impl Chunkable for $uint {
             fn chunks(&self) -> Result<Vec<u8>, MerkleizationError> {
                 let mut root = Vec::with_capacity(BYTES_PER_CHUNK);
                 let _ = self.serialize(&mut root)?;
@@ -120,13 +123,13 @@ impl Deserialize for U256 {
             return Err(DeserializeError::ExpectedFurtherInput {
                 provided: encoding.len(),
                 expected: U256_BYTE_COUNT,
-            })
+            });
         }
         if encoding.len() > U256_BYTE_COUNT {
             return Err(DeserializeError::AdditionalInput {
                 provided: encoding.len(),
                 expected: U256_BYTE_COUNT,
-            })
+            });
         }
 
         // SAFETY: index is safe because encoding.len() == byte_size; qed
@@ -153,7 +156,9 @@ impl GeneralizedIndexable for U256 {
     }
 }
 
-impl Prove for U256 {
+impl Visitable for U256 {}
+
+impl Chunkable for U256 {
     fn chunks(&self) -> Result<Vec<u8>, MerkleizationError> {
         Ok(self.as_le_bytes().to_vec())
     }

@@ -2,12 +2,11 @@ use crate::{
     de::{Deserialize, DeserializeError},
     lib::*,
     merkleization::{
-        mix_in_selector,
-        proofs::{Prove, Prover},
-        GeneralizedIndex, GeneralizedIndexable, HashTreeRoot, MerkleizationError, Node, Path,
-        PathElement, BYTES_PER_CHUNK,
+        mix_in_selector, proofs::Chunkable, GeneralizedIndex, GeneralizedIndexable, HashTreeRoot,
+        MerkleizationError, Node, Path, PathElement, BYTES_PER_CHUNK,
     },
     ser::{Serialize, SerializeError},
+    visitor::{self, Visitable, Visitor},
     Serializable, SimpleSerialize,
 };
 
@@ -50,7 +49,7 @@ where
 {
     fn deserialize(encoding: &[u8]) -> Result<Self, DeserializeError> {
         if encoding.is_empty() {
-            return Err(DeserializeError::ExpectedFurtherInput { provided: 0, expected: 1 })
+            return Err(DeserializeError::ExpectedFurtherInput { provided: 0, expected: 1 });
         }
 
         // SAFETY: index is safe because encoding is not empty; qed
@@ -60,7 +59,7 @@ where
                     return Err(DeserializeError::AdditionalInput {
                         provided: encoding.len(),
                         expected: 1,
-                    })
+                    });
                 }
                 Ok(None)
             }
@@ -99,7 +98,7 @@ where
             match next {
                 PathElement::Index(i) => {
                     if *i >= 2 {
-                        return Err(MerkleizationError::InvalidPathElement(next.clone()))
+                        return Err(MerkleizationError::InvalidPathElement(next.clone()));
                     }
                     let child = parent * 2;
                     match i {
@@ -129,7 +128,30 @@ where
     }
 }
 
-impl<T> Prove for Option<T>
+impl<T> Visitable for Option<T>
+where
+    T: SimpleSerialize + Visitable,
+{
+    fn visit_element<V: Visitor>(&self, index: usize, visitor: &mut V) -> Result<(), V::Error> {
+        if index >= 2 {
+            Err(visitor::VisitorError::InvalidInnerIndex.into())
+        } else {
+            match self {
+                Some(value) => visitor.visit(value),
+                None => {
+                    let leaf = 0usize;
+                    visitor.visit(&leaf)
+                }
+            }
+        }
+    }
+
+    fn element_count(&self) -> usize {
+        2
+    }
+}
+
+impl<T> Chunkable for Option<T>
 where
     T: SimpleSerialize,
 {
@@ -140,20 +162,6 @@ where
                 Ok(root.to_vec())
             }
             None => Ok(vec![0u8; BYTES_PER_CHUNK]),
-        }
-    }
-
-    fn prove_element(&self, index: usize, prover: &mut Prover) -> Result<(), MerkleizationError> {
-        if index >= 2 {
-            Err(MerkleizationError::InvalidInnerIndex)
-        } else {
-            match self {
-                Some(value) => prover.compute_proof(value),
-                None => {
-                    let leaf = 0usize;
-                    prover.compute_proof(&leaf)
-                }
-            }
         }
     }
 
